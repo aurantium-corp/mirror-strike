@@ -1,0 +1,8 @@
+{
+  "track_id": "fix_backfill_on_start_20260208",
+  "type": "bug",
+  "status": "new",
+  "created_at": "2026-02-08T00:15:00Z",
+  "updated_at": "2026-02-08T00:15:00Z",
+  "description": "Fix startup behavior to prevent processing historical trades."
+}

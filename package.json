@@ -1,0 +1,31 @@
+{
+  "name": "mirror-strike",
+  "version": "1.0.0",
+  "description": "Mirror-Strike Copy Trading Bot for Polymarket",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "DRY_RUN=true ts-node tests/dry-run.test.ts",
+    "test:live": "ts-node tests/dry-run.test.ts",
+    "start": "ts-node src/index.ts",
+    "start:dry": "DRY_RUN=true ts-node src/index.ts",
+    "start:live": "DRY_RUN=false ts-node src/index.ts"
+  },
+  "keywords": ["polymarket", "copy-trading", "bot", "clob"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@polymarket/clob-client": "^5.2.1",
+    "@safe-global/protocol-kit": "^1.0.1",
+    "@safe-global/safe-core-sdk-types": "^1.10.1",
+    "@types/node": "^25.2.1",
+    "axios": "^1.13.4",
+    "dotenv": "^17.2.4",
+    "ethers": "^5.7.2",
+    "graphql": "^16.12.0",
+    "graphql-request": "^7.4.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
