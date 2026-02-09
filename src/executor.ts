@@ -25,7 +25,15 @@ export interface TradeActivity {
   title: string;
   name?: string;
   pseudonym?: string;
+  usdcSize?: number;
   [key: string]: any;
+}
+
+export interface DryRunState {
+  virtualBalance: number;
+  virtualPositions: Map<string, any>;
+  totalPnL: number;
+  tradeHistory: any[];
 }
 
 export class Executor {
@@ -36,14 +44,16 @@ export class Executor {
   private ctf!: ethers.Contract;
   private isInitialized: boolean = false;
   private isDryRun: boolean;
+  private mirrorRatio: number;
   private stateFile: string;
-  
-  private dryRunState = { virtualBalance: 300, virtualPositions: new Map<string, any>(), totalPnL: 0, tradeHistory: [] as any[] };
+
+  private dryRunState: DryRunState = { virtualBalance: 1000, virtualPositions: new Map<string, any>(), totalPnL: 0, tradeHistory: [] as any[] };
 
   constructor(isDryRun: boolean = DRY_RUN) {
     this.isDryRun = isDryRun;
+    this.mirrorRatio = parseFloat(process.env.MIRROR_RATIO || '1.0');
     this.stateFile = path.join(process.cwd(), 'dashboard-executor.json');
-    console.log(`[Executor] Starting PID: ${process.pid} | Mode: ${this.isDryRun ? 'DRY-RUN' : 'LIVE'}`);
+    console.log(`[Executor] 🚀 INITIALIZING EXECUTOR | PID: ${process.pid} | MODE: ${this.isDryRun ? 'DRY-RUN' : 'LIVE'} | MIRROR_RATIO: ${this.mirrorRatio}`);
 
     if (this.isDryRun) {
       this.isInitialized = true;
@@ -95,11 +105,23 @@ export class Executor {
         portfolio: cash,
         balance: cash,
         totalPnL: this.dryRunState.totalPnL,
+        mirrorRatio: this.mirrorRatio,
         positions: Array.from(this.dryRunState.virtualPositions.values()),
         lastTrade: this.dryRunState.tradeHistory.slice(-1)[0] || null
       };
       fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
     } catch (e) {}
+  }
+
+  getDryRunState(): DryRunState {
+    return this.dryRunState;
+  }
+
+  resetDryRunState(balance: number, mirrorRatio?: number): void {
+    this.dryRunState = { virtualBalance: balance, virtualPositions: new Map<string, any>(), totalPnL: 0, tradeHistory: [] as any[] };
+    if (mirrorRatio !== undefined) {
+      this.mirrorRatio = mirrorRatio;
+    }
   }
 
   async getBalance(): Promise<number> {
@@ -134,25 +156,45 @@ export class Executor {
 
   private async executeBuy(trade: TradeActivity): Promise<void> {
     const balance = await this.getBalance();
-    const tradeSize = Math.min(balance, trade.size * trade.price);
-    if (tradeSize < 1) return;
+    // Use target's exact USDC size, default to calculated if missing
+    const targetUsdcSize = trade.usdcSize || (trade.size * trade.price);
+    const scaledUsdcAmount = targetUsdcSize * this.mirrorRatio;
+    const tradeUsdcAmount = Math.min(balance, scaledUsdcAmount);
 
-    let slippage = 1.02;
+    console.log(`[SCALE] Target: $${targetUsdcSize.toFixed(2)} × ${this.mirrorRatio} = $${scaledUsdcAmount.toFixed(2)} | Actual: $${tradeUsdcAmount.toFixed(2)}`);
+
+    if (tradeUsdcAmount < 1) {
+        console.log(`[SKIPPED] Amount too small ($${tradeUsdcAmount}) or zero balance.`);
+        return;
+    }
+
+    let slippage = 1.02; // Start with 2% slippage allowance
     for (let i = 0; i < 3; i++) {
       try {
-        let price = trade.price * slippage;
-        if (price >= 1.0) price = 0.999;
-        console.log(`[ACTION] BUY Attempt ${i+1} | Price: ${price.toFixed(4)}`);
-        await this.client.createAndPostOrder({
-          tokenID: trade.asset, price, side: Side.BUY, size: tradeSize / price, feeRateBps: 0
+        let priceLimit = trade.price * slippage;
+        if (priceLimit >= 1.0) priceLimit = 0.999;
+        
+        // Calculate shares based on our target USDC amount and target's entry price
+        // Note: CLOB will fill at best available price up to priceLimit
+        const sharesToBuy = tradeUsdcAmount / trade.price;
+
+        console.log(`[ACTION] BUY Attempt ${i+1} | Target: $${tradeUsdcAmount.toFixed(2)} | Max Price: ${priceLimit.toFixed(4)}`);
+        
+        const order = await this.client.createAndPostOrder({
+          tokenID: trade.asset, 
+          price: parseFloat(priceLimit.toFixed(4)), 
+          side: Side.BUY, 
+          size: parseFloat(sharesToBuy.toFixed(4)), 
+          feeRateBps: 0
         });
-        console.log(`[SUCCESS] BUY Executed`);
+        
+        console.log(`[SUCCESS] BUY Order Posted: ${JSON.stringify(order)}`);
         await this.exportState();
         return;
       } catch (err) {
         console.warn(`[RETRY] BUY Failed: ${(err as any).message}`);
-        slippage += 0.02;
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        slippage += 0.03; // Increase slippage on retry
+        await new Promise(resolve => setTimeout(resolve, 1500));
       }
     }
   }
@@ -160,7 +202,16 @@ export class Executor {
   private async executeSell(trade: TradeActivity): Promise<void> {
     const pos = await this.getPositionSize(trade.asset);
     if (pos <= 0) return;
-    const sellSize = Math.min(trade.size, pos);
+
+    // Calculate proportional sell size based on target's sell amount
+    const targetSellUsdc = trade.usdcSize || (trade.size * trade.price);
+    const scaledSellUsdc = targetSellUsdc * this.mirrorRatio;
+    const sellShares = scaledSellUsdc / trade.price;
+    let sellSize = Math.min(pos, sellShares);
+    // If calculated sell >= 90% of position, sell everything to avoid dust
+    if (sellSize >= pos * 0.9) sellSize = pos;
+
+    console.log(`[SCALE] Sell target: $${targetSellUsdc.toFixed(2)} × ${this.mirrorRatio} = $${scaledSellUsdc.toFixed(2)} | Shares: ${sellSize.toFixed(4)} / ${pos.toFixed(4)}`);
 
     let slippage = 0.98;
     for (let i = 0; i < 3; i++) {
@@ -183,13 +234,63 @@ export class Executor {
   }
 
   private async simulateTrade(trade: TradeActivity) {
+    const targetUsdc = trade.usdcSize || (trade.size * trade.price);
+    const scaledUsdc = targetUsdc * this.mirrorRatio;
+
     if (trade.side === 'BUY') {
-      const tradeSize = Math.min(this.dryRunState.virtualBalance, trade.size * trade.price);
+      if (scaledUsdc > this.dryRunState.virtualBalance) {
+        console.log(`[DRY-RUN] INSUFFICIENT FUNDS - Would need $${scaledUsdc.toFixed(2)} USDC, have $${this.dryRunState.virtualBalance.toFixed(2)} USDC`);
+        return;
+      }
+      const tradeSize = Math.min(this.dryRunState.virtualBalance, scaledUsdc);
       if (tradeSize < 0.01) return;
+      const shares = tradeSize / trade.price;
       this.dryRunState.virtualBalance -= tradeSize;
-      this.dryRunState.tradeHistory.push({ side: 'BUY', title: trade.title });
+
+      // Update virtual position
+      const existing = this.dryRunState.virtualPositions.get(trade.asset);
+      if (existing) {
+        const newTotalCost = existing.totalCost + tradeSize;
+        const newSize = existing.size + shares;
+        existing.size = newSize;
+        existing.totalCost = newTotalCost;
+        existing.averageEntryPrice = newTotalCost / newSize;
+      } else {
+        this.dryRunState.virtualPositions.set(trade.asset, {
+          asset: trade.asset,
+          title: trade.title,
+          size: shares,
+          averageEntryPrice: trade.price,
+          totalCost: tradeSize
+        });
+      }
+
+      console.log(`[DRY-RUN] Would BUY ${shares.toFixed(4)} shares at $${trade.price} (cost: $${tradeSize.toFixed(2)})`);
+      this.dryRunState.tradeHistory.push({ side: 'BUY', title: trade.title, amount: tradeSize, shares });
     } else {
-      this.dryRunState.tradeHistory.push({ side: 'SELL', title: trade.title });
+      const position = this.dryRunState.virtualPositions.get(trade.asset);
+      if (!position || position.size <= 0) {
+        console.log(`[DRY-RUN] Cannot SELL - no position held`);
+        return;
+      }
+
+      const scaledShares = scaledUsdc / trade.price;
+      const sellShares = Math.min(position.size, scaledShares);
+      const sellProceeds = sellShares * trade.price;
+      const costBasis = sellShares * position.averageEntryPrice;
+      const pnl = sellProceeds - costBasis;
+
+      position.size -= sellShares;
+      position.totalCost -= costBasis;
+      if (position.size < 0.0001) {
+        this.dryRunState.virtualPositions.delete(trade.asset);
+      }
+
+      this.dryRunState.virtualBalance += sellProceeds;
+      this.dryRunState.totalPnL += pnl;
+
+      console.log(`[DRY-RUN] Would SELL ${sellShares.toFixed(4)} shares at $${trade.price} (proceeds: $${sellProceeds.toFixed(2)}, PnL: $${pnl.toFixed(2)})`);
+      this.dryRunState.tradeHistory.push({ side: 'SELL', title: trade.title, shares: sellShares, proceeds: sellProceeds, pnl });
     }
     await this.exportState();
   }

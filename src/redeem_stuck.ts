@@ -1,8 +1,8 @@
 import { ethers } from 'ethers';
 import axios from 'axios';
-import Safe from '@safe-global/protocol-kit';
-import { MetaTransactionData, OperationType } from '@safe-global/types-kit';
-import dotenv from 'dotenv';
+import Safe, { EthersAdapter } from '@safe-global/protocol-kit';
+import { MetaTransactionData, OperationType } from '@safe-global/safe-core-sdk-types';
+import * as dotenv from 'dotenv';
 
 dotenv.config();
 
@@ -43,9 +43,16 @@ async function redeemStuck() {
     // Initialize Safe SDK
     let safeSdk: Safe;
     try {
-        safeSdk = await Safe.init({
-            provider: RPC_URL,
-            signer: PRIVATE_KEY,
+        const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
+        const signer = new ethers.Wallet(PRIVATE_KEY, provider);
+
+        const ethAdapter = new EthersAdapter({
+            ethers,
+            signerOrProvider: signer
+        });
+
+        safeSdk = await Safe.create({
+            ethAdapter: ethAdapter as any,
             safeAddress: WALLET_ADDRESS
         });
         console.log('[REDEEM] Safe SDK initialized.');
@@ -54,8 +61,8 @@ async function redeemStuck() {
         return;
     }
 
-    const ctfInterface = new ethers.Interface(CTF_ABI);
-    const parentCollectionId = ethers.ZeroHash;
+    const ctfInterface = new ethers.utils.Interface(CTF_ABI);
+    const parentCollectionId = ethers.constants.HashZero;
 
     const transactions: MetaTransactionData[] = redeemablePositions.map((pos: any) => {
         const indexSet = 1 << pos.outcomeIndex;
@@ -75,7 +82,7 @@ async function redeemStuck() {
 
     try {
         console.log(`[ACTION] Creating Batched Safe transaction with ${transactions.length} calls...`);
-        const safeTransaction = await safeSdk.createTransaction({ transactions });
+        const safeTransaction = await safeSdk.createTransaction({ safeTransactionData: transactions });
         
         console.log(`[ACTION] Signing batched transaction...`);
         const signedSafeTransaction = await safeSdk.signTransaction(safeTransaction);
@@ -90,7 +97,7 @@ async function redeemStuck() {
         console.log('[REDEEM] Attempting one-by-one fallback...');
         for (const txData of transactions) {
             try {
-                const singleTx = await safeSdk.createTransaction({ transactions: [txData] });
+                const singleTx = await safeSdk.createTransaction({ safeTransactionData: [txData] });
                 const signedTx = await safeSdk.signTransaction(singleTx);
                 const resp = await safeSdk.executeTransaction(signedTx);
                 console.log(`[SUCCESS] Individual redemption sent: ${resp.hash}`);

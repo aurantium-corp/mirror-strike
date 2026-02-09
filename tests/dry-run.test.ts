@@ -75,7 +75,7 @@ class DryRunTestRunner {
    * Reset executor state between tests
    */
   private resetState(): void {
-    this.executor.resetDryRunState(100);
+    this.executor.resetDryRunState(100, 1.0);
   }
 
   /**

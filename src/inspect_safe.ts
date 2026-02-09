@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import Safe, { EthersAdapter } from '@safe-global/protocol-kit';
-import dotenv from 'dotenv';
+import * as dotenv from 'dotenv';
 
 dotenv.config();
 
@@ -19,7 +19,7 @@ async function inspect() {
 
     try {
         const safeSdk = await Safe.create({
-            ethAdapter,
+            ethAdapter: ethAdapter as any,
             safeAddress: WALLET_ADDRESS
         });
         console.log("Safe SDK initialized.");

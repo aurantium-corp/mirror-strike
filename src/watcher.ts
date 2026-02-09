@@ -1,11 +1,16 @@
 import axios from 'axios';
-import dotenv from 'dotenv';
-import { Executor } from './executor';
+import * as dotenv from 'dotenv';
+import { ethers } from 'ethers';
+import { Executor, TradeActivity } from './executor';
+export type { TradeActivity };
 import * as fs from 'fs';
 import * as path from 'path';
 import { sendHexNotification } from './telegram/notifier';
 
 dotenv.config();
+
+const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+const ERC20_ABI = ["function balanceOf(address owner) view returns (uint256)"];
 
 // New Endpoint: Polymarket Data API
 const API_URL = 'https://data-api.polymarket.com/activity';
@@ -21,18 +26,6 @@ interface WatcherState {
   };
 }
 
-export interface TradeActivity {
-  transactionHash: string;
-  timestamp: number;
-  side: 'BUY' | 'SELL';
-  asset: string;
-  price: number;
-  size: number;
-  title: string;
-  name?: string;
-  pseudonym?: string;
-  [key: string]: any;
-}
 
 export class Watcher {
   private targets: string[];
@@ -41,21 +34,47 @@ export class Watcher {
   private readonly maxProcessedTxHashes: number = 100; // Keep last 100 tx hashes per target
   private isDryRun: boolean;
   private stateFile: string;
+  private provider: ethers.providers.JsonRpcProvider;
+  private usdc: ethers.Contract;
+  private lastWhaleTrade: any = null;
 
   constructor(targets: string[], executor: Executor, isDryRun: boolean = DRY_RUN) {
     // Normalize and filter empty targets
     this.targets = targets
       .map(t => t.toLowerCase().trim())
       .filter(t => t.length > 0);
-    
+
     this.executor = executor;
     this.isDryRun = isDryRun;
     this.state = this.loadState();
     this.stateFile = path.join(process.cwd(), 'dashboard-watcher.json');
-    
+    this.provider = new ethers.providers.JsonRpcProvider('https://polygon-rpc.com');
+    this.usdc = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, this.provider);
+
     if (this.isDryRun) {
       console.log('[Watcher] 🧪 Dry-run mode - state will be saved to .watcher-state-dryrun.json');
     }
+  }
+
+  /**
+   * Fetch positions for a target from Polymarket API
+   */
+  private async fetchTargetPositions(target: string): Promise<any[]> {
+    const url = `https://data-api.polymarket.com/positions?user=${target}`;
+    const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const positions = response.data;
+    if (Array.isArray(positions)) {
+      return positions.filter((p: any) => parseFloat(p.size) !== 0);
+    }
+    return [];
+  }
+
+  /**
+   * Fetch on-chain USDC balance for a target
+   */
+  private async fetchTargetUsdcBalance(target: string): Promise<number> {
+    const b = await this.usdc.balanceOf(target);
+    return parseFloat(ethers.utils.formatUnits(b, 6));
   }
 
   /**
@@ -64,21 +83,15 @@ export class Watcher {
    */
   private async scanInitialPositions(): Promise<void> {
     console.log('\n[Watcher] 🔍 Scanning initial positions for targets...');
-    // await sendHexNotification('🔮 *Hex Starting Up*\n🔍 Scanning target positions...');
-    
+
     for (const target of this.targets) {
       try {
-        const url = `https://data-api.polymarket.com/positions?user=${target}`;
-        const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const positions = response.data;
-
-        if (Array.isArray(positions) && positions.length > 0) {
+        const positions = await this.fetchTargetPositions(target);
+        if (positions.length > 0) {
           console.log(`[Watcher] Target ${target} current positions:`);
           positions.forEach((p: any) => {
-            if (parseFloat(p.size) !== 0) {
-              const info = `• ${p.title}\n  Size: ${p.size} | Avg: ${p.avgPrice}`;
-              console.log(`  ${info}`);
-            }
+            const info = `• ${p.title}\n  Size: ${p.size} | Avg: ${p.avgPrice}`;
+            console.log(`  ${info}`);
           });
         } else {
           console.log(`[Watcher] Target ${target} has no active positions.`);
@@ -152,19 +165,45 @@ export class Watcher {
   }
 
   /**
-   * Export state for dashboard
+   * Export state for dashboard (includes whale USDC balance + positions)
    */
-  exportState(): void {
+  async exportState(): Promise<void> {
     try {
-      const targetsStatus = this.targets.map(t => ({
-        address: t,
-        lastChecked: this.state[t]?.lastChecked || 0,
-        txCount: this.state[t]?.processedTxHashes.length || 0
+      const targetsStatus = await Promise.all(this.targets.map(async (t) => {
+        const base = {
+          address: t,
+          lastChecked: this.state[t]?.lastChecked || 0,
+          txCount: this.state[t]?.processedTxHashes.length || 0,
+          usdcBalance: 0 as number,
+          positions: [] as any[]
+        };
+
+        try {
+          base.usdcBalance = await this.fetchTargetUsdcBalance(t);
+        } catch (e) {
+          // On-chain query failed — don't block
+        }
+
+        try {
+          const positions = await this.fetchTargetPositions(t);
+          base.positions = positions.map((p: any) => ({
+            title: p.title || '',
+            outcome: p.outcome || '',
+            size: p.size || '0',
+            avgPrice: p.avgPrice || '0',
+            curPrice: p.curPrice || p.currentPrice || '0'
+          }));
+        } catch (e) {
+          // API query failed — don't block
+        }
+
+        return base;
       }));
-      
+
       const state = {
         timestamp: Date.now(),
-        targets: targetsStatus
+        targets: targetsStatus,
+        lastWhaleTrade: this.lastWhaleTrade
       };
       fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
     } catch (e) {
@@ -194,7 +233,7 @@ export class Watcher {
 
       const newTrades = activities.filter((trade: TradeActivity) => {
         const tradeTs = this.normalizeTimestamp(trade.timestamp);
-        const isNewTimestamp = tradeTs > this.state[target].lastChecked;
+        const isNewTimestamp = tradeTs >= this.state[target].lastChecked;
         const isNewTx = !this.isProcessed(target, trade.transactionHash);
         return isNewTimestamp && isNewTx;
       });
@@ -207,6 +246,15 @@ export class Watcher {
           console.log(`[TRADE] ${trade.side} | ${trade.title} | Asset: ${trade.asset} | Tx: ${trade.transactionHash.slice(0, 16)}...`);
           try {
             await this.executor.execute(trade);
+            this.lastWhaleTrade = {
+              side: trade.side,
+              title: trade.title,
+              price: trade.price,
+              size: trade.size,
+              asset: trade.asset,
+              timestamp: trade.timestamp,
+              target: target
+            };
             this.markProcessed(target, trade.transactionHash);
           } catch (execError) {
             console.error(`[Watcher] Executor failed for trade ${trade.transactionHash}:`, (execError as Error).message);
@@ -229,7 +277,7 @@ export class Watcher {
     for (const target of this.targets) {
       await this.pollTarget(target);
     }
-    this.exportState();
+    await this.exportState();
   }
 
   /**

@@ -1,6 +1,4 @@
 import axios from 'axios';
-import * as cheerio from 'cheerio'; // We might need to install this, or just use regex
-
 async function resolveUser(username: string) {
     const url = `https://polymarket.com/@${username}`;
     console.log(`[?] Fetching ${url}...`);
@@ -32,9 +30,9 @@ async function resolveUser(username: string) {
             console.log(`[DEBUG] JSON length: ${str.length}`);
             
             // Heuristic: Find all occurrences of the username and print surrounding context
-            const usernameIndex = str.indexOf(target);
+            const usernameIndex = str.indexOf(username);
             if (usernameIndex !== -1) {
-                console.log(`[+] Found username '${target}' at index ${usernameIndex}`);
+                console.log(`[+] Found username '${username}' at index ${usernameIndex}`);
                 const context = str.substring(Math.max(0, usernameIndex - 500), Math.min(str.length, usernameIndex + 500));
                 console.log(`[DEBUG] Context: ${context}`);
                 
@@ -45,7 +43,7 @@ async function resolveUser(username: string) {
                      return addressMatch[0];
                 }
             } else {
-                console.log(`[-] Username '${target}' not found in NEXT_DATA json string.`);
+                console.log(`[-] Username '${username}' not found in NEXT_DATA json string.`);
             }
         }
 
