@@ -13,12 +13,15 @@ const DRY_RUN = process.env.DRY_RUN === 'true';
 const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097CCe65Ea957C55';
 const ERC20_ABI = ["function balanceOf(address owner) view returns (uint256)"];
-const CTF_ABI = ["function balanceOf(address account, uint256 id) view returns (uint256)"];
+const CTF_ABI = [
+  "function balanceOf(address account, uint256 id) view returns (uint256)",
+  "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"
+];
 
 export interface TradeActivity {
   transactionHash: string;
   timestamp: number;
-  side: 'BUY' | 'SELL';
+  side: 'BUY' | 'SELL' | 'REDEEM' | 'MERGE';
   asset: string;
   price: number;
   size: number;
@@ -26,6 +29,7 @@ export interface TradeActivity {
   name?: string;
   pseudonym?: string;
   usdcSize?: number;
+  conditionId?: string;
   [key: string]: any;
 }
 
@@ -161,10 +165,54 @@ export class Executor {
         await this.simulateTrade(trade);
       } else {
         if (trade.side === 'BUY') await this.executeBuy(trade);
-        else await this.executeSell(trade);
+        else if (trade.side === 'SELL') await this.executeSell(trade);
+        else if (trade.side === 'REDEEM') await this.executeRedeem(trade);
+        else if (trade.side === 'MERGE') await this.executeMerge(trade);
       }
     } catch (e) {
       console.error(`[EXECUTION ERROR] ${(e as any).message}`);
+    }
+  }
+
+  private async executeRedeem(trade: TradeActivity): Promise<void> {
+    if (!trade.conditionId) {
+        console.warn(`[REDEEM] Skipped - No conditionId provided`);
+        return;
+    }
+    console.log(`[ACTION] REDEEMing for condition: ${trade.conditionId}`);
+    try {
+        if (this.isDryRun) return; // Already handled in simulateTrade
+
+        // CTF redeemPositions parameters:
+        // collateralToken, parentCollectionId (0x...0), conditionId, indexSets ([1, 2])
+        // Most Polymarket markets use indexSets [1, 2] for Yes/No
+        const tx = await this.ctf.connect(this.signer).redeemPositions(
+            USDC_ADDRESS,
+            ethers.constants.HashZero,
+            trade.conditionId,
+            [1, 2]
+        );
+        console.log(`[SUCCESS] REDEEM TX Sent: ${tx.hash}`);
+        await tx.wait();
+        console.log(`[SUCCESS] REDEEM Confirmed`);
+        await this.exportState();
+    } catch (err) {
+        console.error(`[ERROR] REDEEM failed: ${(err as any).message}`);
+    }
+  }
+
+  private async executeMerge(trade: TradeActivity): Promise<void> {
+    // Merge typically happens when target has both YES/NO or is cleaning up
+    // In many cases, it's safer to just let the user handle merge, 
+    // but we can attempt to merge if we hold the asset
+    console.log(`[ACTION] MERGE requested for: ${trade.title}`);
+    try {
+        // Polymarket clob-client uses mergePositions
+        // Note: This requires specific conditionId and amounts
+        // For now we log and try a basic merge if possible, or skip if complex
+        console.log(`[SKIPPED] MERGE is currently monitoring-only in Live mode to prevent complex state issues.`);
+    } catch (err) {
+        console.error(`[ERROR] MERGE failed: ${(err as any).message}`);
     }
   }
 
@@ -281,7 +329,7 @@ export class Executor {
 
       console.log(`[DRY-RUN] Would BUY ${shares.toFixed(4)} shares at $${trade.price} (cost: $${tradeSize.toFixed(2)})`);
       this.dryRunState.tradeHistory.push({ side: 'BUY', title: trade.title, amount: tradeSize, shares });
-    } else {
+    } else if (trade.side === 'SELL') {
       const position = this.dryRunState.virtualPositions.get(trade.asset);
       if (!position || position.size <= 0) {
         console.log(`[DRY-RUN] Cannot SELL - no position held`);
@@ -305,6 +353,34 @@ export class Executor {
 
       console.log(`[DRY-RUN] Would SELL ${sellShares.toFixed(4)} shares at $${trade.price} (proceeds: $${sellProceeds.toFixed(2)}, PnL: $${pnl.toFixed(2)})`);
       this.dryRunState.tradeHistory.push({ side: 'SELL', title: trade.title, shares: sellShares, proceeds: sellProceeds, pnl });
+    } else if (trade.side === 'REDEEM') {
+      // For redeem, we assume the whale won. 
+      // If we hold this asset, we convert it to cash at $1.00
+      const position = this.dryRunState.virtualPositions.get(trade.asset);
+      if (position && position.size > 0) {
+        const amount = position.size; // 1 share = 1 USDC on win
+        const costBasis = position.totalCost;
+        const pnl = amount - costBasis;
+        
+        this.dryRunState.virtualBalance += amount;
+        this.dryRunState.totalPnL += pnl;
+        this.dryRunState.virtualPositions.delete(trade.asset);
+        
+        console.log(`[DRY-RUN] Would REDEEM ${amount.toFixed(4)} winning shares for $${amount.toFixed(2)} (PnL: $${pnl.toFixed(2)})`);
+        this.dryRunState.tradeHistory.push({ side: 'REDEEM', title: trade.title, amount, pnl });
+      } else {
+        console.log(`[DRY-RUN] REDEEM detected for ${trade.title} but we hold no position.`);
+      }
+    } else if (trade.side === 'MERGE') {
+      // Merge: Burn YES+NO to get USDC. 
+      // Simplification for Dry-Run: just liquidate position at target price (usually around $1 combined)
+      const position = this.dryRunState.virtualPositions.get(trade.asset);
+      if (position && position.size > 0) {
+        const proceeds = position.size * (trade.price || 1.0);
+        this.dryRunState.virtualBalance += proceeds;
+        this.dryRunState.virtualPositions.delete(trade.asset);
+        console.log(`[DRY-RUN] Would MERGE positions for ${trade.title} (Proceeds: $${proceeds.toFixed(2)})`);
+      }
     }
     await this.exportState();
   }

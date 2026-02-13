@@ -225,7 +225,8 @@ export class Watcher {
     this.initTargetState(target);
     
     try {
-      const url = `${API_URL}?user=${target}&type=TRADE&limit=20`;
+      // Remove type=TRADE to get all activities including REDEEM and MERGE
+      const url = `${API_URL}?user=${target}&limit=20`;
       const response = await axios.get(url, { 
         headers: { 'User-Agent': 'Mozilla/5.0' },
         timeout: 10000 
