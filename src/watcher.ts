@@ -205,7 +205,10 @@ export class Watcher {
         targets: targetsStatus,
         lastWhaleTrade: this.lastWhaleTrade
       };
-      fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
+      
+      const tempFile = `${this.stateFile}.tmp`;
+      fs.writeFileSync(tempFile, JSON.stringify(state, null, 2));
+      fs.renameSync(tempFile, this.stateFile);
     } catch (e) {
       console.error('[Watcher] Failed to export state:', e);
     }

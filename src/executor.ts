@@ -47,13 +47,22 @@ export class Executor {
   private mirrorRatio: number;
   private stateFile: string;
 
-  private dryRunState: DryRunState = { virtualBalance: 1000, virtualPositions: new Map<string, any>(), totalPnL: 0, tradeHistory: [] as any[] };
+  private dryRunState: DryRunState;
 
   constructor(isDryRun: boolean = DRY_RUN) {
     this.isDryRun = isDryRun;
     this.mirrorRatio = parseFloat(process.env.MIRROR_RATIO || '1.0');
     this.stateFile = path.join(process.cwd(), 'dashboard-executor.json');
-    console.log(`[Executor] 🚀 INITIALIZING EXECUTOR | PID: ${process.pid} | MODE: ${this.isDryRun ? 'DRY-RUN' : 'LIVE'} | MIRROR_RATIO: ${this.mirrorRatio}`);
+
+    const initialBalance = parseFloat(process.env.DRY_RUN_WALLET_BALANCE || '1000');
+    this.dryRunState = { 
+      virtualBalance: initialBalance, 
+      virtualPositions: new Map<string, any>(), 
+      totalPnL: 0, 
+      tradeHistory: [] as any[] 
+    };
+
+    console.log(`[Executor] 🚀 INITIALIZING EXECUTOR | PID: ${process.pid} | MODE: ${this.isDryRun ? 'DRY-RUN' : 'LIVE'} | MIRROR_RATIO: ${this.mirrorRatio} | BALANCE: $${initialBalance}`);
 
     if (this.isDryRun) {
       this.isInitialized = true;
@@ -109,8 +118,13 @@ export class Executor {
         positions: Array.from(this.dryRunState.virtualPositions.values()),
         lastTrade: this.dryRunState.tradeHistory.slice(-1)[0] || null
       };
-      fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
-    } catch (e) {}
+      
+      const tempFile = `${this.stateFile}.tmp`;
+      fs.writeFileSync(tempFile, JSON.stringify(state, null, 2));
+      fs.renameSync(tempFile, this.stateFile);
+    } catch (e) {
+      // Quiet fail
+    }
   }
 
   getDryRunState(): DryRunState {
