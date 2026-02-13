@@ -232,7 +232,18 @@ export class Watcher {
         timeout: 10000 
       });
       
-      const activities: TradeActivity[] = response.data;
+      // Normalize activities: Map 'type' to 'side' for non-TRADE activities
+      const activities: TradeActivity[] = response.data.map((activity: any) => {
+        // Debug log for raw activity
+        // console.log(`[RAW] Type: ${activity.type}, Side: ${activity.side}, Asset: ${activity.asset}`);
+        
+        if (activity.type === 'MERGE') activity.side = 'MERGE';
+        else if (activity.type === 'REDEEM') activity.side = 'REDEEM';
+        else if (activity.side) activity.side = activity.side.toUpperCase();
+        
+        return activity;
+      });
+
       if (!Array.isArray(activities) || activities.length === 0) return;
 
       const newTrades = activities.filter((trade: TradeActivity) => {

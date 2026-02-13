@@ -180,7 +180,25 @@ export class Executor {
     for (const pos of positions) {
         // In Polymarket API, resolved positions often have specific flags or 
         // we can identify them if the current price is 0 or 1.
-        const curPrice = parseFloat(pos.curPrice || pos.currentPrice || "0.5");
+        let curPrice = parseFloat(pos.curPrice || pos.currentPrice || "0.5");
+        
+        // In Dry-Run, virtual positions might not have updated prices. Fetch if needed.
+        if (this.isDryRun && (!pos.curPrice || pos.curPrice === undefined)) {
+            try {
+                // Determine asset ID (conditionId or asset)
+                const assetId = pos.asset || pos.assetId || pos.conditionId;
+                if (assetId && this.client) {
+                   const price = await this.client.getMidpointPrice(assetId);
+                   if (price) {
+                       curPrice = parseFloat(price);
+                       pos.curPrice = curPrice; // Update virtual position for next check
+                   }
+                }
+            } catch (e) {
+                // Ignore, keep default
+            }
+        }
+
         const isResolved = curPrice <= 0.01 || curPrice >= 0.99;
         
         if (isResolved) {
