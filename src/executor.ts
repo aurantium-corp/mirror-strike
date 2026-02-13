@@ -188,9 +188,10 @@ export class Executor {
                 // Determine asset ID (conditionId or asset)
                 const assetId = pos.asset || pos.assetId || pos.conditionId;
                 if (assetId && this.client) {
-                   const price = await this.client.getMidpointPrice(assetId);
+                   const price = await this.client.getMidpoint(assetId);
                    if (price) {
-                       curPrice = parseFloat(price);
+                       // price might be an object or string depending on SDK version, cast to string safe
+                       curPrice = parseFloat(price.toString());
                        pos.curPrice = curPrice; // Update virtual position for next check
                    }
                 }
