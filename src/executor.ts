@@ -156,6 +156,52 @@ export class Executor {
     } catch (e) { return 0; }
   }
 
+  async getMyPositions(): Promise<any[]> {
+    if (this.isDryRun) {
+        return Array.from(this.dryRunState.virtualPositions.values());
+    }
+    try {
+        const url = `https://data-api.polymarket.com/positions?user=${WALLET_ADDRESS}`;
+        const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        return Array.isArray(response.data) ? response.data.filter((p: any) => parseFloat(p.size) > 0) : [];
+    } catch (e) {
+        return [];
+    }
+  }
+
+  /**
+   * Proactively check and redeem any resolved positions
+   */
+  async autoCleanup(): Promise<void> {
+    console.log(`[Executor] 🧹 Running auto-cleanup...`);
+    const positions = await this.getMyPositions();
+    if (positions.length === 0) return;
+
+    for (const pos of positions) {
+        // In Polymarket API, resolved positions often have specific flags or 
+        // we can identify them if the current price is 0 or 1.
+        const curPrice = parseFloat(pos.curPrice || pos.currentPrice || "0.5");
+        const isResolved = curPrice <= 0.01 || curPrice >= 0.99;
+        
+        if (isResolved) {
+            console.log(`[Cleanup] Found resolved position: ${pos.title} (Price: ${curPrice})`);
+            const assetId = pos.asset || pos.assetId || pos.conditionId;
+            if (assetId) {
+                await this.executeRedeem({
+                    transactionHash: 'internal-cleanup',
+                    timestamp: Date.now(),
+                    side: 'REDEEM',
+                    asset: assetId,
+                    price: curPrice,
+                    size: parseFloat(pos.size),
+                    title: pos.title,
+                    conditionId: pos.conditionId || assetId
+                });
+            }
+        }
+    }
+  }
+
   async execute(trade: TradeActivity): Promise<void> {
     if (!this.isInitialized) return;
     console.log(`[${this.isDryRun ? 'DRY-RUN' : 'LIVE EXECUTION'}] Mirroring ${trade.side} - ${trade.title}`);

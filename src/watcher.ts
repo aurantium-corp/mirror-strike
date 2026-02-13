@@ -281,6 +281,8 @@ export class Watcher {
     for (const target of this.targets) {
       await this.pollTarget(target);
     }
+    // Proactively cleanup our own positions if they are resolved
+    await this.executor.autoCleanup();
     await this.exportState();
   }
 
