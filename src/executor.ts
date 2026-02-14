@@ -385,6 +385,7 @@ export class Executor {
       } else {
         this.dryRunState.virtualPositions.set(trade.asset, {
           asset: trade.asset,
+          conditionId: trade.conditionId, // Ensure conditionId is stored
           title: trade.title,
           size: shares,
           averageEntryPrice: trade.price,
@@ -419,9 +420,17 @@ export class Executor {
       console.log(`[DRY-RUN] Would SELL ${sellShares.toFixed(4)} shares at $${trade.price} (proceeds: $${sellProceeds.toFixed(2)}, PnL: $${pnl.toFixed(2)})`);
       this.dryRunState.tradeHistory.push({ side: 'SELL', title: trade.title, shares: sellShares, proceeds: sellProceeds, pnl });
     } else if (trade.side === 'REDEEM') {
-      // For redeem, we assume the whale won. 
-      // If we hold this asset, we convert it to cash at $1.00
-      const position = this.dryRunState.virtualPositions.get(trade.asset);
+      // Try to find position by asset first, then by conditionId
+      let position = this.dryRunState.virtualPositions.get(trade.asset);
+      if (!position && trade.conditionId) {
+          for (const p of this.dryRunState.virtualPositions.values()) {
+              if (p.conditionId === trade.conditionId) {
+                  position = p;
+                  break;
+              }
+          }
+      }
+
       if (position && position.size > 0) {
         const amount = position.size; // 1 share = 1 USDC on win
         const costBasis = position.totalCost;
@@ -429,7 +438,7 @@ export class Executor {
         
         this.dryRunState.virtualBalance += amount;
         this.dryRunState.totalPnL += pnl;
-        this.dryRunState.virtualPositions.delete(trade.asset);
+        this.dryRunState.virtualPositions.delete(position.asset);
         
         console.log(`[DRY-RUN] Would REDEEM ${amount.toFixed(4)} winning shares for $${amount.toFixed(2)} (PnL: $${pnl.toFixed(2)})`);
         this.dryRunState.tradeHistory.push({ side: 'REDEEM', title: trade.title, amount, pnl });
@@ -437,13 +446,21 @@ export class Executor {
         console.log(`[DRY-RUN] REDEEM detected for ${trade.title} but we hold no position.`);
       }
     } else if (trade.side === 'MERGE') {
-      // Merge: Burn YES+NO to get USDC. 
-      // Simplification for Dry-Run: just liquidate position at target price (usually around $1 combined)
-      const position = this.dryRunState.virtualPositions.get(trade.asset);
+      // Try to find position by asset first, then by conditionId
+      let position = this.dryRunState.virtualPositions.get(trade.asset);
+      if (!position && trade.conditionId) {
+          for (const p of this.dryRunState.virtualPositions.values()) {
+              if (p.conditionId === trade.conditionId) {
+                  position = p;
+                  break;
+              }
+          }
+      }
+
       if (position && position.size > 0) {
         const proceeds = position.size * (trade.price || 1.0);
         this.dryRunState.virtualBalance += proceeds;
-        this.dryRunState.virtualPositions.delete(trade.asset);
+        this.dryRunState.virtualPositions.delete(position.asset);
         console.log(`[DRY-RUN] Would MERGE positions for ${trade.title} (Proceeds: $${proceeds.toFixed(2)})`);
       }
     }
