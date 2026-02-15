@@ -12,6 +12,9 @@ build/
 
 # State files (private)
 .watcher-state.json
+.watcher-state-dryrun.json
+dashboard-executor.json
+dashboard-watcher.json
 
 # Environment variables
 .env
