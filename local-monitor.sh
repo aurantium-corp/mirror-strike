@@ -32,7 +32,11 @@ check_status() {
         
         echo ''
         echo '--- PM2 进程 ---'
-        pm2 status
+        pm2 status 2>/dev/null || echo 'PM2 not available'
+        
+        echo ''
+        echo '--- Dashboard Systemd 服务 ---'
+        systemctl is-active ms-dashboard 2>/dev/null && echo 'Dashboard: active' || echo 'Dashboard: inactive'
         
         echo ''
         echo '--- 内存使用 ---'
