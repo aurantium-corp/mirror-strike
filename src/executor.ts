@@ -407,8 +407,9 @@ export class Executor {
       } else {
         this.dryRunState.virtualPositions.set(trade.asset, {
           asset: trade.asset,
-          conditionId: trade.conditionId, // Ensure conditionId is stored
+          conditionId: trade.conditionId,
           title: trade.title,
+          outcome: trade.outcome, // Store outcome (Up/Down) to distinguish positions
           size: shares,
           averageEntryPrice: trade.price,
           totalCost: tradeSize
