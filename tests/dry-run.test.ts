@@ -408,7 +408,7 @@ class DryRunTestRunner {
   /**
    * Scenario F: Insufficient Funds
    * Target buys more than our virtual balance allows
-   * Verify: "[DRY-RUN] INSUFFICIENT FUNDS - Would need X USDC, have Y USDC"
+   * Verify: Uses all available balance instead of skipping (consistent with Live mode)
    */
   async testScenarioF_InsufficientFunds(): Promise<void> {
     this.originalLog(`\n${colors.cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${colors.reset}`);
@@ -434,29 +434,31 @@ class DryRunTestRunner {
 
       await this.executor.execute(bigTrade);
 
-      // Verify correct log message
+      // Verify correct log messages
       const hasInsufficientFundsLog = this.hasLog('[DRY-RUN] INSUFFICIENT FUNDS');
-      const hasNeedAmount = this.hasLog('Would need $250.00 USDC');
-      const hasHaveAmount = this.hasLog('have $100.00 USDC');
+      const hasUsingAllBalance = this.hasLog('Using all available balance');
 
-      // Verify balance unchanged
+      // Verify balance is now 0 (all used) and position is created
       const state = this.executor.getDryRunState();
-      const balanceUnchanged = Math.abs(state.virtualBalance - 100) < 0.01;
-      const noPositionCreated = !state.virtualPositions.has(mockData.ASSET_RAIN_YES);
+      const balanceUsed = Math.abs(state.virtualBalance) < 0.01; // Should be ~0
+      const positionCreated = state.virtualPositions.has(mockData.ASSET_RAIN_YES);
+      const positionSize = positionCreated ? state.virtualPositions.get(mockData.ASSET_RAIN_YES).size : 0;
+      const expectedShares = 100 / 0.5; // Using all $100 at $0.5 = 200 shares
+      const correctSize = Math.abs(positionSize - expectedShares) < 0.01;
 
       this.stopCapture();
 
-      const passed = hasInsufficientFundsLog && balanceUnchanged && noPositionCreated;
+      const passed = hasInsufficientFundsLog && hasUsingAllBalance && balanceUsed && positionCreated && correctSize;
       this.recordResult(
-        'Scenario F: Insufficient Funds',
+        'Scenario F: Insufficient Funds (Uses All Balance)',
         passed,
-        passed ? undefined : `Insufficient funds log: ${hasInsufficientFundsLog}, Balance unchanged: ${balanceUnchanged}, No position: ${noPositionCreated}`,
+        passed ? undefined : `Insufficient funds log: ${hasInsufficientFundsLog}, Uses all balance log: ${hasUsingAllBalance}, Balance used: ${balanceUsed}, Position created: ${positionCreated}, Correct size: ${correctSize}`,
         {
           virtualBalance: state.virtualBalance,
+          positionSize,
+          expectedShares,
           hasInsufficientFundsLog,
-          hasNeedAmount,
-          hasHaveAmount,
-          positionCount: state.virtualPositions.size
+          hasUsingAllBalance
         }
       );
     } catch (error) {

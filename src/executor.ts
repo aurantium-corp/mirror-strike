@@ -132,7 +132,13 @@ export class Executor {
   }
 
   getDryRunState(): DryRunState {
-    return this.dryRunState;
+    // Return a deep clone to prevent external mutations and enable proper state comparison
+    return {
+      virtualBalance: this.dryRunState.virtualBalance,
+      virtualPositions: new Map(this.dryRunState.virtualPositions),
+      totalPnL: this.dryRunState.totalPnL,
+      tradeHistory: [...this.dryRunState.tradeHistory]
+    };
   }
 
   resetDryRunState(balance: number, mirrorRatio?: number): void {
@@ -290,8 +296,8 @@ export class Executor {
 
     console.log(`[SCALE] Target: $${targetUsdcSize.toFixed(2)} × ${this.mirrorRatio} = $${scaledUsdcAmount.toFixed(2)} | Actual: $${tradeUsdcAmount.toFixed(2)}`);
 
-    if (tradeUsdcAmount < 1) {
-        console.log(`[SKIPPED] Amount too small ($${tradeUsdcAmount}) or zero balance.`);
+    if (tradeUsdcAmount < 0.01) {
+        console.log(`[SKIPPED] Amount too small ($${tradeUsdcAmount.toFixed(4)}) or zero balance.`);
         return;
     }
 
@@ -335,8 +341,8 @@ export class Executor {
     const scaledSellUsdc = targetSellUsdc * this.mirrorRatio;
     const sellShares = scaledSellUsdc / trade.price;
     let sellSize = Math.min(pos, sellShares);
-    // If calculated sell >= 90% of position, sell everything to avoid dust
-    if (sellSize >= pos * 0.9) sellSize = pos;
+    // If calculated sell >= 99% of position, sell everything to avoid dust
+    if (sellSize >= pos * 0.99) sellSize = pos;
 
     console.log(`[SCALE] Sell target: $${targetSellUsdc.toFixed(2)} × ${this.mirrorRatio} = $${scaledSellUsdc.toFixed(2)} | Shares: ${sellSize.toFixed(4)} / ${pos.toFixed(4)}`);
 
@@ -365,11 +371,12 @@ export class Executor {
     const scaledUsdc = targetUsdc * this.mirrorRatio;
 
     if (trade.side === 'BUY') {
+      // Use all available balance if scaled amount exceeds balance (consistent with Live mode)
+      const tradeSize = Math.min(this.dryRunState.virtualBalance, scaledUsdc);
       if (scaledUsdc > this.dryRunState.virtualBalance) {
         console.log(`[DRY-RUN] INSUFFICIENT FUNDS - Would need $${scaledUsdc.toFixed(2)} USDC, have $${this.dryRunState.virtualBalance.toFixed(2)} USDC`);
-        return;
+        console.log(`[DRY-RUN] Using all available balance: $${tradeSize.toFixed(2)} USDC`);
       }
-      const tradeSize = Math.min(this.dryRunState.virtualBalance, scaledUsdc);
       if (tradeSize < 0.01) return;
       const shares = tradeSize / trade.price;
       this.dryRunState.virtualBalance -= tradeSize;
@@ -403,7 +410,9 @@ export class Executor {
       }
 
       const scaledShares = scaledUsdc / trade.price;
-      const sellShares = Math.min(position.size, scaledShares);
+      let sellShares = Math.min(position.size, scaledShares);
+      // If calculated sell >= 99% of position, sell everything to avoid dust
+      if (sellShares >= position.size * 0.99) sellShares = position.size;
       const sellProceeds = sellShares * trade.price;
       const costBasis = sellShares * position.averageEntryPrice;
       const pnl = sellProceeds - costBasis;
