@@ -111,15 +111,30 @@ export class Executor {
   async exportState(): Promise<void> {
     try {
       let cash = this.isDryRun ? this.dryRunState.virtualBalance : await this.getBalance();
+      
+      // Calculate portfolio value (current market value of all positions)
+      let portfolioValue = 0;
+      const positions = Array.from(this.dryRunState.virtualPositions.values());
+      for (const pos of positions) {
+        // For each position, estimate current value using average entry price as approximation
+        // In a real implementation, you would fetch current market price
+        // Here we use the position size * current price if available, otherwise size * avgEntryPrice
+        const currentPrice = pos.currentPrice || pos.curPrice || pos.averageEntryPrice;
+        portfolioValue += pos.size * currentPrice;
+      }
+      
+      // Total account value = cash + portfolio value
+      const totalValue = cash + portfolioValue;
+      
       const state = {
         timestamp: Date.now(),
         mode: this.isDryRun ? 'DRY-RUN' : 'LIVE',
-        cash: cash,
-        portfolio: cash,
-        balance: cash,
+        cash: cash,                    // Available cash for trading
+        portfolio: portfolioValue,      // Current market value of all positions
+        balance: totalValue,            // Total account value (cash + positions)
         totalPnL: this.dryRunState.totalPnL,
         mirrorRatio: this.mirrorRatio,
-        positions: Array.from(this.dryRunState.virtualPositions.values()),
+        positions: positions,
         lastTrade: this.dryRunState.tradeHistory.slice(-1)[0] || null
       };
       
