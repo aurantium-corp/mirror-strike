@@ -110,29 +110,91 @@ export class Executor {
 
   async exportState(): Promise<void> {
     try {
+      // Cash = available balance for trading
       let cash = this.isDryRun ? this.dryRunState.virtualBalance : await this.getBalance();
       
-      // Calculate portfolio value (current market value of all positions)
-      let portfolioValue = 0;
       const positions = Array.from(this.dryRunState.virtualPositions.values());
-      for (const pos of positions) {
-        // For each position, estimate current value using average entry price as approximation
-        // In a real implementation, you would fetch current market price
-        // Here we use the position size * current price if available, otherwise size * avgEntryPrice
-        const currentPrice = pos.currentPrice || pos.curPrice || pos.averageEntryPrice;
-        portfolioValue += pos.size * currentPrice;
+      
+      // Calculate total cost basis (how much we invested)
+      const totalInvested = positions.reduce((sum, pos) => sum + (pos.totalCost || 0), 0);
+      
+      // Try to calculate portfolio market value if we have current prices
+      let portfolioMarketValue = 0;
+      let hasMarketPrice = false;
+      
+      // In dry-run mode, fetch current prices from CLOB API
+      if (this.isDryRun) {
+        // Cache prices by conditionId to avoid duplicate API calls
+        const priceCache = new Map<string, number>();
+        
+        for (const pos of positions) {
+          try {
+            let currentPrice = priceCache.get(pos.asset);
+            
+            // Fetch price if not cached
+            if (currentPrice === undefined && pos.conditionId) {
+              const response = await axios.get(
+                `https://clob.polymarket.com/markets/${pos.conditionId}`,
+                { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 5000 }
+              );
+              
+              // Extract price from tokens array
+              const tokens = response.data?.tokens || [];
+              for (const token of tokens) {
+                if (token.token_id === pos.asset) {
+                  currentPrice = parseFloat(token.price || '0');
+                  priceCache.set(pos.asset, currentPrice);
+                  break;
+                }
+              }
+            }
+            
+            if (currentPrice && currentPrice > 0) {
+              pos.curPrice = currentPrice;
+              portfolioMarketValue += pos.size * currentPrice;
+              hasMarketPrice = true;
+            } else {
+              portfolioMarketValue += pos.totalCost || 0;
+            }
+          } catch (e) {
+            // Fallback to cost basis if price fetch fails
+            portfolioMarketValue += pos.totalCost || 0;
+          }
+        }
+      } else {
+        for (const pos of positions) {
+          const marketPrice = pos.currentPrice || pos.curPrice;
+          if (marketPrice && marketPrice > 0) {
+            portfolioMarketValue += pos.size * marketPrice;
+            hasMarketPrice = true;
+          } else {
+            // Fallback to cost basis if no market price
+            portfolioMarketValue += pos.totalCost || 0;
+          }
+        }
       }
       
-      // Total account value = cash + portfolio value
-      const totalValue = cash + portfolioValue;
+      // Total Balance = Cash + Portfolio Market Value
+      // This represents: available cash + current value of holdings
+      const totalBalance = cash + portfolioMarketValue;
+      
+      // Calculate unrealized PnL (paper gains/losses on current positions)
+      const unrealizedPnL = hasMarketPrice ? (portfolioMarketValue - totalInvested) : 0;
+      
+      // Total PnL = Realized (from closed trades) + Unrealized (from open positions)
+      const totalPnL = this.dryRunState.totalPnL + unrealizedPnL;
       
       const state = {
         timestamp: Date.now(),
         mode: this.isDryRun ? 'DRY-RUN' : 'LIVE',
-        cash: cash,                    // Available cash for trading
-        portfolio: portfolioValue,      // Current market value of all positions
-        balance: totalValue,            // Total account value (cash + positions)
-        totalPnL: this.dryRunState.totalPnL,
+        cash: cash,                           // Available cash for trading
+        invested: totalInvested,              // Total cost basis (how much we put in)
+        portfolio: portfolioMarketValue,      // Current market value of positions
+        balance: totalBalance,                // Total account value (cash + portfolio market value)
+        realizedPnL: this.dryRunState.totalPnL,  // PnL from closed trades
+        unrealizedPnL: unrealizedPnL,         // Paper gains/losses on open positions
+        totalPnL: totalPnL,                   // Combined PnL
+        hasMarketPrice: hasMarketPrice,       // Whether portfolio value uses real market prices
         mirrorRatio: this.mirrorRatio,
         positions: positions,
         lastTrade: this.dryRunState.tradeHistory.slice(-1)[0] || null
@@ -191,14 +253,83 @@ export class Executor {
   }
 
   /**
+   * Parse market end time from title (e.g., "Bitcoin Up or Down - February 17, 10:45AM-10:50AM ET")
+   * Returns the end time as a Date object, or null if cannot parse
+   */
+  private parseMarketEndTime(title: string): Date | null {
+    try {
+      const currentYear = new Date().getFullYear();
+      
+      // Pattern: "Month DD, HH:MMAM-HH:MMAM ET" or "Month DD, HH:MMAM ET"
+      const timeRangeMatch = title.match(/([A-Za-z]+\s+\d+),\s*(\d+:\d+[AP]M)-(\d+:\d+[AP]M)\s*ET/);
+      const singleTimeMatch = title.match(/([A-Za-z]+\s+\d+),\s*(\d+[AP]M)\s*ET/);
+      
+      if (timeRangeMatch) {
+        // Has time range like "10:45AM-10:50AM"
+        const dateStr = timeRangeMatch[1]; // "February 17"
+        const endTimeStr = timeRangeMatch[3]; // "10:50AM"
+        const fullDateStr = `${dateStr} ${currentYear} ${endTimeStr} UTC-0500`;
+        return new Date(fullDateStr);
+      } else if (singleTimeMatch) {
+        // Has single time like "10AM"
+        const dateStr = singleTimeMatch[1]; // "February 17"
+        const timeStr = singleTimeMatch[2]; // "10AM"
+        const fullDateStr = `${dateStr} ${currentYear} ${timeStr} UTC-0500`;
+        return new Date(fullDateStr);
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Check if a market has expired based on its title
+   */
+  private isMarketExpired(title: string): boolean {
+    const endTime = this.parseMarketEndTime(title);
+    if (!endTime) return false;
+    
+    // Add 5 minute buffer after market end to allow final settlements
+    const bufferMs = 5 * 60 * 1000;
+    return Date.now() > (endTime.getTime() + bufferMs);
+  }
+
+  /**
    * Proactively check and redeem any resolved positions
    */
   async autoCleanup(): Promise<void> {
     console.log(`[Executor] 🧹 Running auto-cleanup...`);
     const positions = await this.getMyPositions();
+    console.log(`[Cleanup] Checking ${positions.length} positions...`);
     if (positions.length === 0) return;
 
+    let removedCount = 0;
     for (const pos of positions) {
+        const title = pos.title || '';
+        
+        // Check if market has expired based on title
+        const isExpired = this.isMarketExpired(title);
+        console.log(`[Cleanup] Checking: ${title.substring(0, 50)}... expired=${isExpired}`);
+        
+        if (isExpired) {
+            console.log(`[Cleanup] ⏰ Market EXPIRED: ${title}`);
+            const assetId = pos.asset || pos.assetId || pos.conditionId;
+            console.log(`[Cleanup] AssetId: ${assetId}`);
+            if (assetId) {
+                // Remove expired position without redeeming (market is closed)
+                if (this.isDryRun) {
+                    const hadPosition = this.dryRunState.virtualPositions.has(assetId);
+                    this.dryRunState.virtualPositions.delete(assetId);
+                    if (hadPosition) {
+                        removedCount++;
+                        console.log(`[Cleanup] 🗑️  Removed expired position from dry-run: ${title}`);
+                    }
+                }
+            }
+            continue;
+        }
+        
         // In Polymarket API, resolved positions often have specific flags or 
         // we can identify them if the current price is 0 or 1.
         let curPrice = parseFloat(pos.curPrice || pos.currentPrice || "0.5");
@@ -240,6 +371,9 @@ export class Executor {
             }
         }
     }
+    
+    // Export state after cleanup
+    await this.exportState();
   }
 
   async execute(trade: TradeActivity): Promise<void> {
@@ -490,5 +624,34 @@ export class Executor {
       }
     }
     await this.exportState();
+  }
+
+  /**
+   * Force cleanup all expired positions immediately
+   * This can be called via API or on startup
+   */
+  async forceCleanupExpiredPositions(): Promise<{ removed: number; remaining: number }> {
+    console.log(`[Executor] 🧹 Force cleaning up expired positions...`);
+    const positions = await this.getMyPositions();
+    let removedCount = 0;
+    
+    for (const pos of positions) {
+      const title = pos.title || '';
+      if (this.isMarketExpired(title)) {
+        const assetId = pos.asset || pos.assetId || pos.conditionId;
+        if (assetId && this.isDryRun) {
+          if (this.dryRunState.virtualPositions.has(assetId)) {
+            this.dryRunState.virtualPositions.delete(assetId);
+            removedCount++;
+            console.log(`[ForceCleanup] 🗑️  Removed: ${title}`);
+          }
+        }
+      }
+    }
+    
+    await this.exportState();
+    const remaining = this.dryRunState.virtualPositions.size;
+    console.log(`[ForceCleanup] ✅ Removed ${removedCount} expired positions, ${remaining} remaining`);
+    return { removed: removedCount, remaining };
   }
 }

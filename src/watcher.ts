@@ -219,6 +219,49 @@ export class Watcher {
   }
 
   /**
+   * Parse market end time from title (e.g., "Bitcoin Up or Down - February 17, 10:45AM-10:50AM ET")
+   * Returns the end time as a Date object, or null if cannot parse
+   */
+  private parseMarketEndTime(title: string): Date | null {
+    try {
+      const currentYear = new Date().getFullYear();
+      
+      // Pattern: "Month DD, HH:MMAM-HH:MMAM ET" or "Month DD, HH:MMAM ET"
+      const timeRangeMatch = title.match(/([A-Za-z]+\s+\d+),\s*(\d+:\d+[AP]M)-(\d+:\d+[AP]M)\s*ET/);
+      const singleTimeMatch = title.match(/([A-Za-z]+\s+\d+),\s*(\d+[AP]M)\s*ET/);
+      
+      if (timeRangeMatch) {
+        // Has time range like "10:45AM-10:50AM"
+        const dateStr = timeRangeMatch[1]; // "February 17"
+        const endTimeStr = timeRangeMatch[3]; // "10:50AM"
+        const fullDateStr = `${dateStr} ${currentYear} ${endTimeStr} UTC-0500`;
+        return new Date(fullDateStr);
+      } else if (singleTimeMatch) {
+        // Has single time like "10AM"
+        const dateStr = singleTimeMatch[1]; // "February 17"
+        const timeStr = singleTimeMatch[2]; // "10AM"
+        const fullDateStr = `${dateStr} ${currentYear} ${timeStr} UTC-0500`;
+        return new Date(fullDateStr);
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Check if a market has expired based on its title
+   */
+  private isMarketExpired(title: string): boolean {
+    const endTime = this.parseMarketEndTime(title);
+    if (!endTime) return false;
+    
+    // Add 5 minute buffer after market end to allow final settlements
+    const bufferMs = 5 * 60 * 1000;
+    return Date.now() > (endTime.getTime() + bufferMs);
+  }
+
+  /**
    * Poll a single target for new trade activity
    */
   private async pollTarget(target: string): Promise<void> {
@@ -258,6 +301,13 @@ export class Watcher {
         newTrades.sort((a, b) => a.timestamp - b.timestamp);
         
         for (const trade of newTrades) {
+          // Skip expired markets (don't follow trades for markets that have already ended)
+          if (this.isMarketExpired(trade.title)) {
+            console.log(`[SKIP] ⏰ Market EXPIRED - Ignoring ${trade.side} for ${trade.title}`);
+            this.markProcessed(target, trade.transactionHash);
+            continue;
+          }
+          
           console.log(`[TRADE] ${trade.side} | ${trade.title} | Asset: ${trade.asset} | Tx: ${trade.transactionHash.slice(0, 16)}...`);
           try {
             await this.executor.execute(trade);
