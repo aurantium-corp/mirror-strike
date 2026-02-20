@@ -52,6 +52,10 @@ export class Executor {
   private stateFile: string;
 
   private dryRunState: DryRunState;
+  
+  // Price cache to avoid API call jitter
+  private priceCache: Map<string, { price: number; timestamp: number }> = new Map();
+  private readonly PRICE_CACHE_TTL = 60000; // 60 seconds
 
   constructor(isDryRun: boolean = DRY_RUN) {
     this.isDryRun = isDryRun;
@@ -122,16 +126,27 @@ export class Executor {
       let portfolioMarketValue = 0;
       let hasMarketPrice = false;
       
-      // In dry-run mode, fetch current prices from CLOB API
+      // Clean up expired price cache entries
+      const now = Date.now();
+      for (const [key, entry] of this.priceCache.entries()) {
+        if (now - entry.timestamp > this.PRICE_CACHE_TTL) {
+          this.priceCache.delete(key);
+        }
+      }
+      
+      // In dry-run mode, fetch current prices from CLOB API with caching
       if (this.isDryRun) {
-        // Cache prices by conditionId to avoid duplicate API calls
-        const priceCache = new Map<string, number>();
-        
         for (const pos of positions) {
           try {
-            let currentPrice = priceCache.get(pos.asset);
+            // Check if we have a valid cached price
+            const cachedEntry = this.priceCache.get(pos.asset);
+            let currentPrice: number | undefined;
             
-            // Fetch price if not cached
+            if (cachedEntry && (now - cachedEntry.timestamp < this.PRICE_CACHE_TTL)) {
+              currentPrice = cachedEntry.price;
+            }
+            
+            // Fetch price from API if not cached or expired
             if (currentPrice === undefined && pos.conditionId) {
               const response = await axios.get(
                 `https://clob.polymarket.com/markets/${pos.conditionId}`,
@@ -143,7 +158,8 @@ export class Executor {
               for (const token of tokens) {
                 if (token.token_id === pos.asset) {
                   currentPrice = parseFloat(token.price || '0');
-                  priceCache.set(pos.asset, currentPrice);
+                  // Cache the price
+                  this.priceCache.set(pos.asset, { price: currentPrice, timestamp: Date.now() });
                   break;
                 }
               }
@@ -154,11 +170,20 @@ export class Executor {
               portfolioMarketValue += pos.size * currentPrice;
               hasMarketPrice = true;
             } else {
+              // Fallback to cost basis if no price available
               portfolioMarketValue += pos.totalCost || 0;
             }
           } catch (e) {
-            // Fallback to cost basis if price fetch fails
-            portfolioMarketValue += pos.totalCost || 0;
+            // On API error, try to use cached price even if expired
+            const cachedEntry = this.priceCache.get(pos.asset);
+            if (cachedEntry && cachedEntry.price > 0) {
+              pos.curPrice = cachedEntry.price;
+              portfolioMarketValue += pos.size * cachedEntry.price;
+              hasMarketPrice = true;
+            } else {
+              // Final fallback to cost basis
+              portfolioMarketValue += pos.totalCost || 0;
+            }
           }
         }
       } else {

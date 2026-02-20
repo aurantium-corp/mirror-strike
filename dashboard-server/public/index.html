@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mirror-Strike Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; min-height: 100vh; padding: 20px; }
+        .header { text-align: center; margin-bottom: 30px; padding: 20px; background: rgba(255,255,255,0.05); border-radius: 15px; border: 1px solid rgba(255,255,255,0.1); }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .control-panel { background: rgba(0,0,0,0.3); border-radius: 12px; padding: 20px; margin-bottom: 25px; border: 1px solid rgba(255,255,255,0.1); }
+        .control-title { font-size: 1.1em; color: #00d4ff; margin-bottom: 15px; }
+        .control-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .control-item { display: flex; flex-direction: column; gap: 8px; }
+        .control-label { font-size: 0.85em; color: #888; }
+        .btn { padding: 12px 20px; border: none; border-radius: 8px; font-size: 0.95em; font-weight: bold; cursor: pointer; transition: all 0.3s ease; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .btn-toggle { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .btn-toggle.live { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .btn-stop { background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%); color: white; }
+        .btn-start { background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%); color: white; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
+        .btn-save { background: linear-gradient(135deg, #00d4ff 0%, #7b2cbf 100%); color: white; }
+        .status-indicator { width: 12px; height: 12px; border-radius: 50%; animation: pulse 2s infinite; }
+        .status-indicator.online { background: #00ff88; }
+        .status-indicator.offline { background: #ff4444; animation: none; }
+        .status-indicator.warning { background: #ffaa00; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .status-bar { display: flex; justify-content: center; gap: 30px; flex-wrap: wrap; margin-top: 15px; }
+        .status-item { display: flex; align-items: center; gap: 8px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; max-width: 1600px; margin: 0 auto; }
+        .card { background: rgba(255,255,255,0.05); border-radius: 15px; padding: 20px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); }
+        .card-title { font-size: 1.3em; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; color: #00d4ff; }
+        .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
+        .stat-box { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 10px; text-align: center; }
+        .stat-box.wide { grid-column: 1 / -1; background: linear-gradient(135deg, rgba(0,212,255,0.1) 0%, rgba(123,44,191,0.1) 100%); border: 1px solid rgba(0,212,255,0.3); }
+        .stat-label { font-size: 0.85em; color: #888; margin-bottom: 5px; }
+        .stat-value { font-size: 1.6em; font-weight: bold; }
+        .stat-value.positive { color: #00ff88; }
+        .stat-value.negative { color: #ff4444; }
+        .stat-value.neutral { color: #fff; }
+        .stat-desc { font-size: 0.75em; color: #888; margin-top: 4px; }
+        .position-list { max-height: 300px; overflow-y: auto; }
+        .position-item { background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid #00d4ff; }
+        .position-title { font-weight: bold; margin-bottom: 5px; font-size: 0.95em; }
+        .position-details { display: flex; gap: 15px; font-size: 0.85em; color: #aaa; flex-wrap: wrap; }
+        .trade-item { background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .trade-side { padding: 4px 12px; border-radius: 20px; font-size: 0.8em; font-weight: bold; }
+        .trade-side.buy { background: rgba(0,255,136,0.2); color: #00ff88; }
+        .trade-side.sell { background: rgba(255,68,68,0.2); color: #ff4444; }
+        .timestamp { text-align: center; color: #666; font-size: 0.85em; margin-top: 20px; }
+        .loading { text-align: center; padding: 40px; color: #888; }
+        .spinner { display: inline-block; width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid #00d4ff; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 15px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .toast { position: fixed; bottom: 20px; right: 20px; padding: 15px 25px; border-radius: 8px; color: white; font-weight: bold; z-index: 1000; transform: translateY(100px); transition: transform 0.3s ease; max-width: 400px; }
+        .toast.show { transform: translateY(0); }
+        .toast.success { background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%); }
+        .toast.error { background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%); }
+        .toast.warning { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } .stat-grid { grid-template-columns: 1fr; } .control-grid { grid-template-columns: 1fr; } }
+        
+        /* Mirror Ratio Slider Styles */
+        .ratio-container {
+            background: rgba(0,0,0,0.2);
+            padding: 15px;
+            border-radius: 10px;
+        }
+        .ratio-display {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #00d4ff;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .ratio-slider {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.1);
+            outline: none;
+            -webkit-appearance: none;
+        }
+        .ratio-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00d4ff 0%, #7b2cbf 100%);
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        .ratio-slider::-moz-range-thumb {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00d4ff 0%, #7b2cbf 100%);
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        .ratio-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75em;
+            color: #888;
+            margin-top: 5px;
+        }
+        .ratio-status {
+            text-align: center;
+            font-size: 0.85em;
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 6px;
+            background: rgba(0,212,255,0.1);
+        }
+        .ratio-status.saved {
+            background: rgba(0,255,136,0.1);
+            color: #00ff88;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Mirror-Strike Dashboard</h1>
+        <div class="status-bar">
+            <div class="status-item"><div class="status-indicator online" id="bot-status-indicator"></div><span id="bot-status-text">Bot: Online</span></div>
+            <div class="status-item"><div class="status-indicator online" id="mode-indicator"></div><span id="mode-text">DRY-RUN MODE</span></div>
+            <div class="status-item"><span>Mirror Ratio:</span><strong id="mirror-ratio-display">-</strong></div>
+            <div class="status-item"><span>Last Update:</span><strong id="last-update">-</strong></div>
+        </div>
+    </div>
+
+    <div class="control-panel">
+        <div class="control-title">Control Panel</div>
+        <div class="control-grid">
+            <div class="control-item">
+                <span class="control-label">Mirror Ratio (10%-100%)</span>
+                <div class="ratio-container">
+                    <div class="ratio-display" id="ratio-value">1.0x</div>
+                    <input type="range" class="ratio-slider" id="ratio-slider" min="0.1" max="1.0" step="0.1" value="1.0">
+                    <div class="ratio-labels">
+                        <span>0.1</span>
+                        <span>0.5</span>
+                        <span>1.0</span>
+                    </div>
+                    <div class="ratio-status" id="ratio-status">
+                        Adjust ratio and save. Bot will use this on restart.
+                    </div>
+                    <button class="btn btn-save" id="btn-save-ratio" style="margin-top: 10px; width: 100%;">
+                        Save Ratio
+                    </button>
+                </div>
+            </div>
+            <div class="control-item">
+                <span class="control-label">Target Trader's Address</span>
+                <div class="address-container">
+                    <input type="text" id="target-address" placeholder="0x..." style="width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:rgba(0,0,0,0.3);color:#fff;font-family:monospace;font-size:0.85em;box-sizing:border-box;">
+                    <div class="address-status" id="address-status" style="font-size:0.75em;color:#888;margin-top:5px;">
+                        Enter target wallet address
+                    </div>
+                    <button class="btn btn-save" id="btn-save-address" style="margin-top: 10px; width: 100%;">
+                        Save Address
+                    </button>
+                </div>
+            </div>
+            <div class="control-item"><span class="control-label">Trading Mode</span><button class="btn btn-toggle" id="btn-toggle-mode"><span id="mode-btn-text">Switch to LIVE</span></button></div>
+            <div class="control-item"><span class="control-label">Bot Control</span><button class="btn btn-stop" id="btn-stop">Stop Bot</button></div>
+            <div class="control-item"><span class="control-label"><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="clear-records" checked><span style="font-size:0.85em">Clear old records</span></label></span><button class="btn btn-start" id="btn-start">Start Bot</button></div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <div class="card-title">My Portfolio Overview</div>
+            <div class="stat-grid">
+                <div class="stat-box"><div class="stat-label">Available Cash</div><div class="stat-value neutral" id="cash">-</div><div class="stat-desc">可用现金</div></div>
+                <div class="stat-box"><div class="stat-label">Invested</div><div class="stat-value neutral" id="invested">-</div><div class="stat-desc">已投入成本</div></div>
+                <div class="stat-box"><div class="stat-label">Portfolio Value</div><div class="stat-value neutral" id="portfolio">-</div><div class="stat-desc">持仓市值 <span id="price-type" style="color:#888">(cost)</span></div></div>
+                <div class="stat-box"><div class="stat-label">Positions</div><div class="stat-value neutral" id="position-count">-</div><div class="stat-desc">持仓数量</div></div>
+                <div class="stat-box wide"><div class="stat-label">Total Balance</div><div class="stat-value neutral" id="balance">-</div><div class="stat-desc">总资产 = 现金 + 持仓市值</div></div>
+                <div class="stat-box"><div class="stat-label">Realized PnL</div><div class="stat-value" id="realized-pnl">-</div><div class="stat-desc">已实现盈亏</div></div>
+                <div class="stat-box"><div class="stat-label">Total PnL</div><div class="stat-value" id="total-pnl">-</div><div class="stat-desc">总盈亏</div></div>
+            </div>
+        </div>
+        <div class="card"><div class="card-title">Target Trader</div><div id="target-info"><div class="loading"><div class="spinner"></div><div>Loading...</div></div></div></div>
+        <div class="card"><div class="card-title">My Positions</div><div class="position-list" id="positions"><div class="loading"><div class="spinner"></div><div>Loading...</div></div></div></div>
+        <div class="card"><div class="card-title">Last Trade</div><div id="last-trade"><div class="loading"><div class="spinner"></div><div>Loading...</div></div></div></div>
+    </div>
+    <div class="timestamp">Auto-refresh every 3 seconds</div>
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const API_BASE = '/ms-dashboard/api';
+        
+        function formatCurrency(value) {
+            if (value === undefined || value === null) return '-';
+            return '$' + parseFloat(value).toFixed(2);
+        }
+        
+        function formatNumber(value, decimals) {
+            if (decimals === undefined) decimals = 4;
+            if (value === undefined || value === null) return '-';
+            return parseFloat(value).toFixed(decimals);
+        }
+        
+        function formatTime(timestamp) {
+            if (!timestamp) return '-';
+            return new Date(timestamp).toLocaleTimeString('zh-TW');
+        }
+        
+        function showToast(message, type) {
+            if (!type) type = 'success';
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast ' + type;
+            toast.classList.add('show');
+            setTimeout(function() { toast.classList.remove('show'); }, 3000);
+        }
+        
+        // Mirror Ratio Control
+        var currentRatio = 1.0;
+        
+        async function fetchMirrorRatio() {
+            try {
+                const response = await fetch(API_BASE + '/mirror-ratio');
+                const result = await response.json();
+                if (!result.error) {
+                    currentRatio = result.ratio;
+                    document.getElementById('ratio-slider').value = currentRatio;
+                    document.getElementById('ratio-value').textContent = currentRatio.toFixed(1) + 'x';
+                    document.getElementById('mirror-ratio-display').textContent = currentRatio.toFixed(1) + 'x';
+                }
+            } catch (err) {
+                console.error('Failed to fetch mirror ratio:', err);
+            }
+        }
+        
+        document.getElementById('ratio-slider').addEventListener('input', function() {
+            var val = parseFloat(this.value);
+            document.getElementById('ratio-value').textContent = val.toFixed(1) + 'x';
+            document.getElementById('ratio-status').textContent = 'Click Save to apply ' + val.toFixed(1) + 'x ratio';
+            document.getElementById('ratio-status').classList.remove('saved');
+        });
+        
+        document.getElementById('btn-save-ratio').addEventListener('click', async function() {
+            var val = parseFloat(document.getElementById('ratio-slider').value);
+            try {
+                const response = await fetch(API_BASE + '/mirror-ratio', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ratio: val })
+                });
+                const result = await response.json();
+                if (result.error) {
+                    showToast('Error: ' + result.error, 'error');
+                } else {
+                    currentRatio = result.ratio;
+                    document.getElementById('ratio-value').textContent = currentRatio.toFixed(1) + 'x';
+                    document.getElementById('mirror-ratio-display').textContent = currentRatio.toFixed(1) + 'x';
+                    document.getElementById('ratio-status').textContent = 'Saved! Will take effect on next bot restart.';
+                    document.getElementById('ratio-status').classList.add('saved');
+                    showToast('Mirror ratio saved: ' + currentRatio.toFixed(1) + 'x', 'success');
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        });
+        
+        document.getElementById('btn-toggle-mode').addEventListener('click', async function() {
+            if (!confirm('Are you sure you want to toggle the trading mode?')) return;
+            try {
+                const response = await fetch(API_BASE + '/mode/toggle', { method: 'POST' });
+                const result = await response.json();
+                if (result.error) {
+                    showToast('Error: ' + result.error, 'error');
+                } else {
+                    var msg = result.mode === 'LIVE' ? 'Switched to LIVE MODE!' : 'Switched to DRY-RUN MODE';
+                    showToast(msg, result.mode === 'LIVE' ? 'warning' : 'success');
+                    updateModeButton(result.mode);
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        });
+        
+        document.getElementById('btn-stop').addEventListener('click', async function() {
+            if (!confirm('Are you sure you want to STOP the bot?')) return;
+            try {
+                const response = await fetch(API_BASE + '/bot/stop', { method: 'POST' });
+                const result = await response.json();
+                if (result.error) {
+                    showToast('Error: ' + result.error, 'error');
+                } else {
+                    showToast('Bot stopped successfully', 'success');
+                    updateBotStatus(false);
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        });
+        
+        document.getElementById('btn-start').addEventListener('click', async function() {
+            var clearRecords = document.getElementById('clear-records').checked;
+            if (!confirm(clearRecords ? 'Start bot and CLEAR old records?' : 'Start bot with existing records?')) return;
+            try {
+                var url = API_BASE + '/bot/start';
+                const response = await fetch(url, { method: 'POST' });
+                const result = await response.json();
+                if (result.error) {
+                    showToast('Error: ' + result.error, 'error');
+                } else {
+                    showToast('Bot started successfully', 'success');
+                    updateBotStatus(true);
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        });
+        
+        function updateModeButton(mode) {
+            const btn = document.getElementById('btn-toggle-mode');
+            const text = document.getElementById('mode-btn-text');
+            if (mode === 'LIVE') {
+                btn.classList.add('live');
+                text.textContent = 'Switch to DRY-RUN';
+                document.getElementById('mode-text').textContent = 'LIVE MODE';
+                document.getElementById('mode-indicator').className = 'status-indicator warning';
+            } else {
+                btn.classList.remove('live');
+                text.textContent = 'Switch to LIVE';
+                document.getElementById('mode-text').textContent = 'DRY-RUN MODE';
+                document.getElementById('mode-indicator').className = 'status-indicator online';
+            }
+        }
+        
+        function updateBotStatus(running) {
+            const indicator = document.getElementById('bot-status-indicator');
+            const text = document.getElementById('bot-status-text');
+            const btnStop = document.getElementById('btn-stop');
+            const btnStart = document.getElementById('btn-start');
+            const addrInput = document.getElementById('target-address');
+            const addrBtn = document.getElementById('btn-save-address');
+            const addrStatus = document.getElementById('address-status');
+            if (running) {
+                indicator.className = 'status-indicator online';
+                text.textContent = 'Bot: Online';
+                btnStop.disabled = false;
+                btnStart.disabled = true;
+                // Lock address input when bot is running
+                if (addrInput) { addrInput.disabled = true; addrInput.style.opacity = '0.6'; addrInput.style.cursor = 'not-allowed'; }
+                if (addrBtn) addrBtn.disabled = true;
+                if (addrStatus) { addrStatus.textContent = 'Locked while bot is running'; addrStatus.style.color = '#ffaa00'; }
+            } else {
+                indicator.className = 'status-indicator offline';
+                text.textContent = 'Bot: Offline';
+                btnStop.disabled = true;
+                btnStart.disabled = false;
+                // Unlock address input when bot is stopped
+                if (addrInput) { addrInput.disabled = false; addrInput.style.opacity = '1'; addrInput.style.cursor = 'text'; }
+                if (addrBtn) addrBtn.disabled = false;
+                if (addrStatus) { addrStatus.textContent = 'Enter target wallet address'; addrStatus.style.color = '#888'; }
+            }
+        }
+        
+        async function fetchMode() {
+            try {
+                const response = await fetch(API_BASE + '/mode');
+                const result = await response.json();
+                if (!result.error) {
+                    updateModeButton(result.mode);
+                }
+            } catch (err) {
+                console.error('Failed to fetch mode:', err);
+            }
+        }
+        
+        async function fetchBotStatus() {
+            try {
+                const response = await fetch(API_BASE + '/bot/status');
+                const result = await response.json();
+                if (!result.error) {
+                    updateBotStatus(result.running);
+                }
+            } catch (err) {
+                console.error('Failed to fetch bot status:', err);
+            }
+        }
+        
+        async function fetchData() {
+            try {
+                const response = await fetch(API_BASE + '/status');
+                const result = await response.json();
+                if (result.error) return;
+                updateDashboard(result.data);
+            } catch (err) {
+                document.getElementById('bot-status-indicator').className = 'status-indicator offline';
+            }
+        }
+        
+        function updateDashboard(data) {
+            const executor = data.executor;
+            const watcher = data.watcher;
+            
+            if (executor) {
+                document.getElementById('last-update').textContent = formatTime(executor.timestamp);
+                
+                document.getElementById('cash').textContent = formatCurrency(executor.cash);
+                document.getElementById('invested').textContent = formatCurrency(executor.invested);
+                document.getElementById('portfolio').textContent = formatCurrency(executor.portfolio);
+                document.getElementById('balance').textContent = formatCurrency(executor.balance);
+                document.getElementById('position-count').textContent = (executor.positions || []).length;
+                
+                document.getElementById('price-type').textContent = executor.hasMarketPrice ? '(market)' : '(cost)';
+                
+                var realizedPnL = executor.realizedPnL || 0;
+                var realizedEl = document.getElementById('realized-pnl');
+                realizedEl.textContent = formatCurrency(realizedPnL);
+                realizedEl.className = 'stat-value ' + (realizedPnL >= 0 ? 'positive' : 'negative');
+                
+                var totalPnL = executor.totalPnL || 0;
+                var totalEl = document.getElementById('total-pnl');
+                totalEl.textContent = formatCurrency(totalPnL);
+                totalEl.className = 'stat-value ' + (totalPnL >= 0 ? 'positive' : 'negative');
+                
+                updatePositions(executor.positions || []);
+                updateLastTrade(executor.lastTrade);
+            }
+            
+            if (watcher && watcher.targets && watcher.targets[0]) {
+                updateTargetInfo(watcher.targets[0], watcher.lastWhaleTrade);
+            }
+        }
+        
+        function updatePositions(positions) {
+            const container = document.getElementById('positions');
+            if (positions.length === 0) {
+                container.innerHTML = '<div style="text-align:center;padding:20px;color:#666">No active positions</div>';
+                return;
+            }
+            var html = '';
+            for (var i = 0; i < positions.length; i++) {
+                var pos = positions[i];
+                var outcomeColor = pos.outcome === 'Up' ? '#00ff88' : pos.outcome === 'Down' ? '#ff4444' : '#888';
+                html += '<div class="position-item">';
+                html += '<div class="position-title">' + (pos.title || 'Unknown') + ' <span style="color:' + outcomeColor + '">[' + (pos.outcome || '?') + ']</span></div>';
+                html += '<div class="position-details">';
+                html += '<span>Size: ' + formatNumber(pos.size) + '</span>';
+                html += '<span>Avg: ' + formatCurrency(pos.averageEntryPrice, 3) + '</span>';
+                html += '<span>Cost: ' + formatCurrency(pos.totalCost) + '</span>';
+                html += '</div></div>';
+            }
+            // Add scrollable container for positions
+            var scrollableHtml = html.replace(/margin-top:10px/g, "margin-top:10px;max-height:300px;overflow-y:auto");
+            container.innerHTML = scrollableHtml;
+        }
+        
+        function updateLastTrade(trade) {
+            const container = document.getElementById('last-trade');
+            if (!trade) {
+                container.innerHTML = '<div style="text-align:center;padding:20px;color:#666">No recent trades</div>';
+                return;
+            }
+            var sideClass = trade.side === 'BUY' ? 'buy' : 'sell';
+            var html = '<div class="trade-item">';
+            html += '<div><div style="font-weight:bold;margin-bottom:5px">' + (trade.title || 'Unknown') + '</div>';
+            html += '<div style="font-size:0.85em;color:#888">';
+            if (trade.shares) html += 'Shares: ' + formatNumber(trade.shares) + ' ';
+            if (trade.amount) html += 'Amount: ' + formatCurrency(trade.amount) + ' ';
+            if (trade.pnl !== undefined) html += 'PnL: ' + formatCurrency(trade.pnl) + ' ';
+            html += '</div></div>';
+            html += '<div class="trade-side ' + sideClass + '">' + trade.side + '</div>';
+            html += '</div>';
+            // Add scrollable container for positions
+            var scrollableHtml = html.replace(/margin-top:10px/g, "margin-top:10px;max-height:300px;overflow-y:auto");
+            container.innerHTML = scrollableHtml;
+        }
+        
+        function updateTargetInfo(target, lastTrade) {
+            const container = document.getElementById('target-info');
+            const addr = target.address || 'Unknown';
+            const shortAddr = addr.slice(0, 10) + '...' + addr.slice(-4);
+            
+            var targetPortfolioValue = 0;
+            if (target.positions && target.positions.length > 0) {
+                for (var i = 0; i < target.positions.length; i++) {
+                    var pos = target.positions[i];
+                    var curPrice = parseFloat(pos.curPrice || pos.currentPrice || pos.avgPrice || 0);
+                    var size = parseFloat(pos.size || 0);
+                    targetPortfolioValue += size * curPrice;
+                }
+            }
+            var targetTotalValue = (target.usdcBalance || 0) + targetPortfolioValue;
+            
+            var posHtml = '';
+            if (target.positions && target.positions.length > 0) {
+                for (var j = 0; j < target.positions.length; j++) {
+                    var p = target.positions[j];
+                    posHtml += '<div style="margin-top:8px;font-size:0.85em;color:#aaa">';
+                    posHtml += '• ' + (p.title ? p.title.slice(0, 30) : 'Unknown') + ' ';
+                    posHtml += '[' + (p.outcome || '?') + '] ' + parseFloat(p.size).toFixed(2) + ' @ ' + p.avgPrice;
+                    posHtml += '</div>';
+                }
+            }
+            
+            var html = '<div style="font-family:monospace;background:rgba(0,0,0,0.3);padding:8px 12px;border-radius:6px;font-size:0.9em;word-break:break-all;margin-bottom:15px">' + shortAddr + '</div>';
+            html += '<div class="stat-grid" style="margin-bottom:15px">';
+            html += '<div class="stat-box"><div class="stat-label">USDC Balance</div><div class="stat-value">' + formatCurrency(target.usdcBalance) + '</div></div>';
+            html += '<div class="stat-box"><div class="stat-label">Portfolio</div><div class="stat-value">' + formatCurrency(targetPortfolioValue) + '</div></div>';
+            html += '<div class="stat-box" style="grid-column:1/-1"><div class="stat-label">Total Value</div><div class="stat-value">' + formatCurrency(targetTotalValue) + '</div></div>';
+            html += '</div>';
+            html += '<div style="margin-top:10px"><strong>Positions (' + (target.positions || []).length + '):</strong>' + posHtml + '</div>';
+            // Add scrollable container for positions
+            var scrollableHtml = html.replace(/margin-top:10px/g, "margin-top:10px;max-height:300px;overflow-y:auto");
+            container.innerHTML = scrollableHtml;
+        }
+        
+        // Target Address functions
+        async function fetchTargetAddress() {
+            try {
+                const response = await fetch(API_BASE + '/target-address');
+                const result = await response.json();
+                const addrInput = document.getElementById('target-address');
+                const addrStatus = document.getElementById('address-status');
+                if (!result.error && result.address && addrInput) {
+                    addrInput.value = result.address;
+                    if (addrStatus) {
+                        addrStatus.textContent = 'Saved: ' + result.address.slice(0, 10) + '...' + result.address.slice(-4);
+                        addrStatus.style.color = '#00ff88';
+                    }
+                    console.log('[Dashboard] Target address loaded:', result.address);
+                } else {
+                    console.log('[Dashboard] No target address set');
+                    if (addrStatus && !addrInput.value) {
+                        addrStatus.textContent = 'Enter target wallet address';
+                        addrStatus.style.color = '#888';
+                    }
+                }
+            } catch (err) {
+                console.error('[Dashboard] Error fetching target address:', err);
+            }
+        }
+        
+        document.getElementById('btn-save-address').addEventListener('click', async function() {
+            const address = document.getElementById('target-address').value.trim();
+            if (!address) {
+                showToast('Please enter a target address', 'error');
+                return;
+            }
+            if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+                showToast('Invalid Ethereum address format', 'error');
+                return;
+            }
+            try {
+                const response = await fetch(API_BASE + '/target-address', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address: address })
+                });
+                const result = await response.json();
+                if (result.error) {
+                    showToast('Error: ' + result.error, 'error');
+                } else {
+                    document.getElementById('address-status').textContent = 'Saved: ' + address.slice(0, 10) + '...' + address.slice(-4);
+                    document.getElementById('address-status').style.color = '#00ff88';
+                    showToast('Target address saved: ' + address.slice(0, 10) + '...' + address.slice(-4), 'success');
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        });
+        
+        // Initialize
+        fetchMirrorRatio();
+        fetchMode();
+        fetchTargetAddress();
+        fetchBotStatus();
+        fetchData();
+        setInterval(fetchData, 3000);
+        setInterval(fetchBotStatus, 10000);
+    </script>
+</body>
+</html>

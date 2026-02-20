@@ -11,6 +11,8 @@ dotenv.config();
 
 const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const ERC20_ABI = ["function balanceOf(address owner) view returns (uint256)"];
+const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097CCe65Ea957C55";
+const CTF_ABI = ["function balanceOf(address account, uint256 id) view returns (uint256)", "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"];
 
 // New Endpoint: Polymarket Data API
 const API_URL = 'https://data-api.polymarket.com/activity';
@@ -36,6 +38,7 @@ export class Watcher {
   private stateFile: string;
   private provider: ethers.providers.JsonRpcProvider;
   private usdc: ethers.Contract;
+  private ctf: ethers.Contract;
   private lastWhaleTrade: any = null;
 
   constructor(targets: string[], executor: Executor, isDryRun: boolean = DRY_RUN) {
@@ -50,6 +53,7 @@ export class Watcher {
     this.stateFile = path.join(process.cwd(), 'dashboard-watcher.json');
     this.provider = new ethers.providers.JsonRpcProvider('https://polygon-rpc.com');
     this.usdc = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, this.provider);
+    this.ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, this.provider);
 
     if (this.isDryRun) {
       console.log('[Watcher] 🧪 Dry-run mode - state will be saved to .watcher-state-dryrun.json');
@@ -70,11 +74,27 @@ export class Watcher {
   }
 
   /**
-   * Fetch on-chain USDC balance for a target
+   * Fetch USDC balance for a target
+   * For Polymarket proxy wallets, USDC is held in the CTF contract
+   * We query the CTF contract for the USDC balance of the proxy wallet
    */
   private async fetchTargetUsdcBalance(target: string): Promise<number> {
-    const b = await this.usdc.balanceOf(target);
-    return parseFloat(ethers.utils.formatUnits(b, 6));
+    try {
+      // For Polymarket, the USDC is stored in the CTF contract
+      // Query CTF contract balance for USDC token (tokenId 0 for collateral)
+      // The CTF contract holds USDC as collateral for positions
+      const usdcInCtf = await this.ctf.balanceOf(target, 0); // tokenId 0 is USDC collateral
+      if (usdcInCtf.gt(0)) {
+        return parseFloat(ethers.utils.formatUnits(usdcInCtf, 6));
+      }
+      
+      // Fallback: query direct USDC balance (for non-proxy wallets)
+      const directBalance = await this.usdc.balanceOf(target);
+      return parseFloat(ethers.utils.formatUnits(directBalance, 6));
+    } catch (error) {
+      console.warn(`[Watcher] Failed to fetch USDC balance for ${target}:`, (error as Error).message);
+      return 0;
+    }
   }
 
   /**
